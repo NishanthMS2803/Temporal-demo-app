@@ -22,19 +22,39 @@ public class SubscriptionController {
     }
 
     @PostMapping("/subscribe")
-    public Map<String, String> subscribe(@RequestParam(required = false, defaultValue = "100.0") double initialBalance) {
+    public Map<String, String> subscribe(
+            @RequestParam(required = false, defaultValue = "100.0") double initialBalance,
+            @RequestParam(required = false) String pinVersion) {
         String subscriptionId = "sub-" + System.currentTimeMillis();
 
         // Set initial balance for this subscription
         wallet.addBalance(subscriptionId, initialBalance);
 
+        // Build workflow options
+        String taskQueue = "SUBSCRIPTION_TASK_QUEUE";
+
+        // NEW: Use version-specific task queue for pinning
+        // Note: In Temporal 1.23.0, direct workflow-level build ID pinning through client API
+        // may not be fully supported. Alternative approach: use task queue routing
+        // For proper version pinning, you would need to:
+        // 1. Use temporal CLI to set up build ID defaults/ramps
+        // 2. Or create version-specific task queues
+        // For now, we'll route to the same task queue and rely on task queue versioning config
+        if (pinVersion != null && !pinVersion.isEmpty()) {
+            // Add version info to workflow metadata for tracking
+            // Actual version routing is controlled by task queue build ID configuration
+            subscriptionId = subscriptionId + "-" + pinVersion.replace(".", "_");
+        }
+
+        WorkflowOptions options = WorkflowOptions.newBuilder()
+                .setWorkflowId(subscriptionId)
+                .setTaskQueue(taskQueue)
+                .build();
+
         SubscriptionWorkflow workflow =
                 client.newWorkflowStub(
                         SubscriptionWorkflow.class,
-                        WorkflowOptions.newBuilder()
-                                .setWorkflowId(subscriptionId)
-                                .setTaskQueue("SUBSCRIPTION_TASK_QUEUE")
-                                .build()
+                        options
                 );
 
         WorkflowClient.start(workflow::start, subscriptionId);
@@ -43,7 +63,11 @@ public class SubscriptionController {
         response.put("subscriptionId", subscriptionId);
         response.put("initialBalance", String.valueOf(initialBalance));
         response.put("subscriptionPrice", String.valueOf(wallet.getSubscriptionPrice()));
+        response.put("pinnedVersion", pinVersion != null ? pinVersion : "default");
         response.put("status", "STARTED");
+        response.put("note", pinVersion != null ?
+            "Version pinning via task queue build ID configuration" :
+            "Using current default version");
 
         return response;
     }

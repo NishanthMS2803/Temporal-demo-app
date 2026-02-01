@@ -1,6 +1,17 @@
-limit.maxIDLength:
-  - value: 255
+# Worker Versioning Configuration
+worker.buildIdScavengerEnabled:
+  - value: true
     constraints: {}
-system.forceSearchAttributesCacheRefreshOnRead:
-  - value: true # Dev setup only. Please don't turn this on in production.
+
+frontend.enableWorkerVersioningDataAPIs:
+  - value: true
+    constraints: {}
+
+frontend.enableWorkerVersioningWorkflowAPIs:
+  - value: true
+    constraints: {}
+
+# Increase limits for better testing
+limit.maxIDLength:
+  - value: 1000
     constraints: {}

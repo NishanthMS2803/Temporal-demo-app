@@ -10,6 +10,10 @@ import java.time.Duration;
 
 public class SubscriptionWorkflowImpl implements SubscriptionWorkflow {
 
+    private static final String VERSION = "v1.0-immediate-pause";
+    private static final int MAX_BILLING_CYCLES = 12;  // NEW: Complete after 12 cycles
+    private static final Duration PAUSE_TIMEOUT = Duration.ofMinutes(3);  // NEW: Auto-cancel after 3 minutes in PAUSED
+
     private boolean paused = false;
     private boolean cancelled = false;
     private boolean gatewayIssue = false;  // Track if last failure was gateway-related
@@ -37,10 +41,21 @@ public class SubscriptionWorkflowImpl implements SubscriptionWorkflow {
         currentState = "ACTIVE";
 
         Workflow.getLogger(this.getClass())
-                .info("Subscription started: {}", subscriptionId);
+                .info("🆕 Starting subscription with VERSION: {} - subscriptionId: {}", VERSION, subscriptionId);
 
         while (!cancelled) {
             billingCycle++;
+
+            // NEW: Check if reached max billing cycles
+            if (totalPaymentsProcessed >= MAX_BILLING_CYCLES) {
+                Workflow.getLogger(this.getClass()).info(
+                    "✅ Subscription completed {} billing cycles. Ending workflow gracefully.",
+                    MAX_BILLING_CYCLES
+                );
+                currentState = "COMPLETED_MAX_CYCLES";
+                break;  // Exit loop, workflow completes
+            }
+
             currentRetryAttempts = 0;
             boolean success = false;
 
@@ -102,17 +117,32 @@ public class SubscriptionWorkflowImpl implements SubscriptionWorkflow {
                     gatewayIssue = false;
                     currentState = "PAUSED";
                     Workflow.getLogger(this.getClass())
-                            .warn("Subscription PAUSED after {} failed attempts in cycle {} (insufficient funds)",
+                            .warn("Subscription PAUSED after {} failed attempts in cycle {} (insufficient funds). Waiting for resume signal (max 3 minutes)...",
                                   currentRetryAttempts, billingCycle);
 
-                    // Wait indefinitely until resume signal is received or workflow is cancelled
-                    Workflow.await(() -> !paused || cancelled);
+                    // NEW: Wait with timeout
+                    boolean resumed = Workflow.await(
+                        PAUSE_TIMEOUT,
+                        () -> !paused || cancelled
+                    );
+
+                    if (!resumed && !cancelled) {
+                        // NEW: Auto-cancel after timeout
+                        Workflow.getLogger(this.getClass()).warn(
+                            "⏰ Subscription paused for 3 minutes without resume. Auto-cancelling."
+                        );
+                        cancelled = true;
+                        currentState = "CANCELLED_PAUSE_TIMEOUT";
+                        break;  // Exit loop
+                    }
 
                     if (cancelled) {
                         break;
                     }
 
+                    // Resumed successfully
                     currentRetryAttempts = 0; // Reset retry counter after resume
+                    currentState = "ACTIVE";
                     Workflow.getLogger(this.getClass())
                             .info("Subscription RESUMED, continuing from cycle {}", billingCycle);
                 }
@@ -125,9 +155,16 @@ public class SubscriptionWorkflowImpl implements SubscriptionWorkflow {
             }
         }
 
-        currentState = "CANCELLED";
-        Workflow.getLogger(this.getClass())
-                .info("Subscription cancelled after {} cycles and {} successful payments", billingCycle, totalPaymentsProcessed);
+        // Workflow completion
+        if (!currentState.equals("CANCELLED_PAUSE_TIMEOUT") &&
+            !currentState.equals("COMPLETED_MAX_CYCLES")) {
+            currentState = "CANCELLED";
+        }
+
+        Workflow.getLogger(this.getClass()).info(
+            "Subscription ended. Final state: {}, Cycles: {}, Payments: {}",
+            currentState, billingCycle, totalPaymentsProcessed
+        );
     }
 
     @Override
